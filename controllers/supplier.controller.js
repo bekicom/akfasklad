@@ -427,21 +427,18 @@ exports.getSupplierDetail = async (req, res) => {
 
     /* =========================
        DATE FILTER (purchase_date)
-       DEFAULT = FAQAT 2026
     ========================= */
-    const defaultFrom = new Date("2023-01-01T00:00:00.000Z");
-    const defaultTo = new Date("2023-12-31T23:59:59.999Z");
-
-    const fromDate = parseDate(req.query.from, false) || defaultFrom;
-    const toDate = parseDate(req.query.to, true) || defaultTo;
+    const fromDate = parseDate(req.query.from, false);
+    const toDate = parseDate(req.query.to, true);
 
     const purchaseFilter = {
       supplier_id: new mongoose.Types.ObjectId(id),
-      purchase_date: {
-        $gte: fromDate,
-        $lte: toDate,
-      },
     };
+    if (fromDate || toDate) {
+      purchaseFilter.purchase_date = {};
+      if (fromDate) purchaseFilter.purchase_date.$gte = fromDate;
+      if (toDate) purchaseFilter.purchase_date.$lte = toDate;
+    }
 
     /* =========================
        PURCHASES (PARTIYALAR)
@@ -482,7 +479,7 @@ exports.getSupplierDetail = async (req, res) => {
         to: toDate,
       },
 
-      debt, // 🔥 faqat 2026 (yoki berilgan oraliq)
+      debt,
 
       purchases, // 🔹 partiyalar (purchase_date bo‘yicha)
     });
@@ -602,13 +599,8 @@ exports.getSupplierPurchases = async (req, res) => {
 
     const supplierId = new mongoose.Types.ObjectId(id);
 
-    // 🔥 FAQAT 2026-01-27 DAN BOSHLAB
-    const fromDate = new Date(Date.UTC(2023, 0, 27, 0, 0, 0));
-
     const purchases = await Purchase.find({
       supplier_id: supplierId, // 🔒 NULL LAR O‘TMAYDI
-      purchase_date: { $gte: fromDate },
-
       status: { $ne: "PAID" },
       $or: [{ "remaining.UZS": { $gt: 0 } }, { "remaining.USD": { $gt: 0 } }],
     })

@@ -15,6 +15,7 @@ const agentOrderController = require("../controllers/agentOrder.controller");
 const cashierOrderController = require("../controllers/cashierOrder.controller");
 const returnController = require("../controllers/return.controller");
 const expenseController = require("../controllers/expense.controller");
+const carController = require("../controllers/car.controller");
 const analyticsRoutes = require("../modules/analytics/analytics.routes");
 const uploadProductImages = require("../middlewares/uploadProductImage");
 const withdrawalController = require("../controllers/withdrawal.controller");
@@ -36,6 +37,15 @@ router.post("/auth/register", authController.register);
 
 // login
 router.post("/auth/login", authController.login);
+
+/**
+ * CARS (DEMO CRUD)
+ */
+router.post("/cars", carController.createCar);
+router.get("/cars", carController.getCars);
+router.get("/cars/:id", carController.getCarById);
+router.put("/cars/:id", carController.updateCar);
+router.delete("/cars/:id", carController.deleteCar);
 
 /**
  * USERS (ADMIN only)

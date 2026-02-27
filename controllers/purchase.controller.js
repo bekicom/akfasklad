@@ -173,29 +173,27 @@ exports.getPurchases = async (req, res) => {
       filter.status = status;
     }
 
-    // 🔥 SANA FILTER (purchase_date BO'YICHA)
-    // FAQAT 2026-01-27 DAN BOSHLAB
-    const minDate = new Date(Date.UTC(2023, 0, 27, 0, 0, 0));
-
+    // SANA FILTER (purchase_date BO'YICHA): faqat query berilganda qo'llanadi
     if (from || to) {
       filter.purchase_date = {};
 
-      // Agar 'from' berilgan bo'lsa, uni minDate bilan solishtiramiz
       if (from) {
         const fromDate = new Date(from);
-        // Kattaroq sanani olamiz (from va minDate orasidan)
-        filter.purchase_date.$gte = fromDate > minDate ? fromDate : minDate;
-      } else {
-        // Agar 'from' berilmagan bo'lsa, faqat minDate dan boshlaymiz
-        filter.purchase_date.$gte = minDate;
+        if (!Number.isNaN(fromDate.getTime())) {
+          filter.purchase_date.$gte = fromDate;
+        }
       }
 
       if (to) {
-        filter.purchase_date.$lte = new Date(to);
+        const toDate = new Date(to);
+        if (!Number.isNaN(toDate.getTime())) {
+          filter.purchase_date.$lte = toDate;
+        }
       }
-    } else {
-      // Agar hech qanday sana berilmagan bo'lsa, faqat minDate dan keyingilarni olamiz
-      filter.purchase_date = { $gte: minDate };
+
+      if (Object.keys(filter.purchase_date).length === 0) {
+        delete filter.purchase_date;
+      }
     }
 
     const purchases = await Purchase.find(filter)
