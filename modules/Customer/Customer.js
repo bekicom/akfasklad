@@ -54,6 +54,53 @@ const customerSchema = new mongoose.Schema(
       USD: { type: Number, default: 0 },
     },
 
+    cashback_balance: {
+      UZS: { type: Number, default: 0 },
+      USD: { type: Number, default: 0 },
+    },
+
+    cashback_total_earned: {
+      UZS: { type: Number, default: 0 },
+      USD: { type: Number, default: 0 },
+    },
+
+    cashback_total_paid: {
+      UZS: { type: Number, default: 0 },
+      USD: { type: Number, default: 0 },
+    },
+
+    cashback_history: [
+      {
+        type: {
+          type: String,
+          enum: ["EARN", "USE", "PAYOUT", "ROLLBACK", "ADJUST"],
+          required: true,
+        },
+        currency: {
+          type: String,
+          enum: ["UZS", "USD"],
+          required: true,
+        },
+        amount: {
+          type: Number,
+          required: true,
+          min: 0,
+        },
+        source: {
+          type: String,
+          enum: ["SALE", "CASH", "PRODUCT", "ADMIN"],
+          default: "ADMIN",
+        },
+        saleId: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "Sale",
+          default: null,
+        },
+        note: { type: String, default: "" },
+        date: { type: Date, default: Date.now },
+      },
+    ],
+
     /* =====================
        PAYMENT HISTORY
     ===================== */

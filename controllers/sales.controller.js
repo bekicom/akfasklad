@@ -5,6 +5,16 @@ const Sale = require("../modules/sales/Sale");
 const Product = require("../modules/products/Product");
 const Warehouse = require("../modules/Warehouse/Warehouse");
 const Customer = require("../modules/Customer/Customer");
+const {
+  calculateLineCashback,
+  buildCashbackSummaryFromItems,
+  ensureCustomerCashback,
+  applyEarnedCashback,
+  applyUsedCashback,
+  rollbackEarnedCashback,
+  rollbackUsedCashback,
+  roundMoney,
+} = require("../utils/cashback");
 
 /* =====================
    HELPERS
@@ -34,6 +44,7 @@ exports.createSale = async (req, res) => {
       customer, // yangi customer bo‘lishi mumkin
       items = [],
       discount = 0,
+      cashbackToUse = {},
       note = "",
     } = req.body || {};
 
@@ -62,17 +73,18 @@ exports.createSale = async (req, res) => {
     ===================== */
     let finalCustomerId = null;
     let customerSnapshot = null;
+    let customerDoc = null;
 
     if (mongoose.isValidObjectId(customerId)) {
-      const c = await Customer.findById(customerId).session(session);
-      if (!c) throw new Error("Customer topilmadi");
+      customerDoc = await Customer.findById(customerId).session(session);
+      if (!customerDoc) throw new Error("Customer topilmadi");
 
-      finalCustomerId = c._id;
+      finalCustomerId = customerDoc._id;
       customerSnapshot = {
-        name: c.name,
-        phone: c.phone,
-        address: c.address,
-        note: c.note,
+        name: customerDoc.name,
+        phone: customerDoc.phone,
+        address: customerDoc.address,
+        note: customerDoc.note,
       };
     } else if (customer && customer.name) {
       const created = await Customer.create(
@@ -88,6 +100,7 @@ exports.createSale = async (req, res) => {
         { session },
       );
 
+      customerDoc = created[0];
       finalCustomerId = created[0]._id;
       customerSnapshot = {
         name: created[0].name,
@@ -106,7 +119,7 @@ exports.createSale = async (req, res) => {
       _id: { $in: productIds },
     })
       .select(
-        "_id name model color category unit images qty buy_price warehouse_currency",
+        "_id name model color category unit images qty buy_price warehouse_currency cashback_percent",
       )
       .session(session);
 
@@ -189,6 +202,10 @@ exports.createSale = async (req, res) => {
         sell_price: sellPrice,
         buy_price: safeNumber(p.buy_price),
         subtotal: +(qty * sellPrice).toFixed(2),
+        ...calculateLineCashback({
+          subtotal: qty * sellPrice,
+          cashbackPercent: p.cashback_percent,
+        }),
       };
     });
 
@@ -241,10 +258,60 @@ exports.createSale = async (req, res) => {
       currencyTotals[cur].debtAmount = currencyTotals[cur].grandTotal;
     }
 
+    const cashback = buildCashbackSummaryFromItems(saleItems);
+
+    if (
+      !finalCustomerId &&
+      (Number(cashbackToUse?.UZS || 0) > 0 || Number(cashbackToUse?.USD || 0) > 0)
+    ) {
+      throw new Error("Cashback ishlatish uchun customer tanlanishi kerak");
+    }
+
+    if (finalCustomerId) {
+      ensureCustomerCashback(customerDoc);
+
+      for (const cur of ["UZS", "USD"]) {
+        const requestedUse = roundMoney(cashbackToUse?.[cur] || 0);
+
+        if (requestedUse < 0) {
+          throw new Error(`${cur} cashback manfiy bo‘lishi mumkin emas`);
+        }
+
+        if (requestedUse === 0) continue;
+
+        const availableCashback = roundMoney(
+          customerDoc.cashback_balance?.[cur] || 0,
+        );
+
+        if (requestedUse > availableCashback) {
+          throw new Error(`${cur} cashback balansi yetarli emas`);
+        }
+
+        if (requestedUse > currencyTotals[cur].grandTotal) {
+          throw new Error(`${cur} cashback sale summasidan katta bo‘lishi mumkin emas`);
+        }
+
+        cashback[cur].used = requestedUse;
+        currencyTotals[cur].paidAmount = requestedUse;
+        currencyTotals[cur].debtAmount = roundMoney(
+          currencyTotals[cur].grandTotal - requestedUse,
+        );
+      }
+    }
+
     /* =====================
        🔟 SALE CREATE
     ===================== */
     const invoiceNo = `S-${Date.now()}`;
+
+    for (const cur of ["UZS", "USD"]) {
+      const grandTotal = roundMoney(currencyTotals[cur].grandTotal);
+      const usedCashback = roundMoney(cashback[cur].used || 0);
+      const earnRatio =
+        grandTotal > 0 ? Math.max(0, (grandTotal - usedCashback) / grandTotal) : 0;
+
+      cashback[cur].earned = roundMoney(cashback[cur].earned * earnRatio);
+    }
 
     const [sale] = await Sale.create(
       [
@@ -260,8 +327,14 @@ exports.createSale = async (req, res) => {
             discount: disc,
             grandTotal:
               currencyTotals.UZS.grandTotal + currencyTotals.USD.grandTotal,
+            cashbackUsed:
+              Number(cashback.UZS.used || 0) + Number(cashback.USD.used || 0),
+            payableTotal:
+              Number(currencyTotals.UZS.debtAmount || 0) +
+              Number(currencyTotals.USD.debtAmount || 0),
           },
           currencyTotals,
+          cashback,
           note,
           status: "COMPLETED",
         },
@@ -274,10 +347,9 @@ exports.createSale = async (req, res) => {
        🔥 FAQAT BALANCE
     ===================== */
     if (finalCustomerId) {
-      const customerDoc =
-        await Customer.findById(finalCustomerId).session(session);
-
       if (customerDoc) {
+        ensureCustomerCashback(customerDoc);
+
         customerDoc.balance.UZS =
           Number(customerDoc.balance.UZS || 0) +
           Number(currencyTotals.UZS.debtAmount || 0);
@@ -286,6 +358,8 @@ exports.createSale = async (req, res) => {
           Number(customerDoc.balance.USD || 0) +
           Number(currencyTotals.USD.debtAmount || 0);
 
+        applyUsedCashback(customerDoc, sale);
+        applyEarnedCashback(customerDoc, sale);
         await customerDoc.save({ session });
       }
     }
@@ -422,6 +496,7 @@ exports.getSales = async (req, res) => {
 
       totals: sale.totals,
       currencyTotals: sale.currencyTotals,
+      cashback: sale.cashback || { UZS: { earned: 0 }, USD: { earned: 0 } },
       payments: sale.payments || [],
       note: sale.note || "",
     }));
@@ -515,10 +590,23 @@ exports.cancelSale = async (req, res) => {
         }
       }
 
+      if (sale.customerId && sale.cashbackStatus !== "ROLLED_BACK") {
+        const customer = await Customer.findById(sale.customerId).session(
+          session,
+        );
+
+        if (customer) {
+          rollbackUsedCashback(customer, sale);
+          rollbackEarnedCashback(customer, sale);
+          await customer.save({ session });
+        }
+      }
+
       /* =====================
          3️⃣ SALE CANCELED
       ===================== */
       sale.status = "CANCELED";
+      sale.cashbackStatus = "ROLLED_BACK";
       sale.canceledAt = new Date();
       sale.cancelReason = req.body?.reason || "Sale bekor qilindi";
 
@@ -657,6 +745,12 @@ exports.adjustSaleItemQty = async (req, res) => {
     if (!sale) throw new Error("Sale topilmadi");
     if (sale.status !== "COMPLETED")
       throw new Error("Faqat COMPLETED sale tahrirlanadi");
+    if (
+      Number(sale.cashback?.UZS?.used || 0) > 0 ||
+      Number(sale.cashback?.USD?.used || 0) > 0
+    ) {
+      throw new Error("Cashback ishlatilgan sale tahrirlanmaydi");
+    }
 
     const itemIndex = sale.items.findIndex(
       (it) => String(it.productId) === String(productId),
@@ -695,6 +789,9 @@ exports.adjustSaleItemQty = async (req, res) => {
     } else {
       item.qty = qty;
       item.subtotal = +(qty * item.sell_price).toFixed(2);
+      item.cashbackAmount = +(
+        item.subtotal * (Number(item.cashbackPercent || 0) / 100)
+      ).toFixed(2);
     }
 
     /* =====================
@@ -737,6 +834,12 @@ exports.adjustSaleItemQty = async (req, res) => {
     sale.totals.subtotal = uzsSubtotal + usdSubtotal;
     sale.totals.grandTotal =
       sale.currencyTotals.UZS.grandTotal + sale.currencyTotals.USD.grandTotal;
+    const previousCashback = sale.cashback || {
+      UZS: { earned: 0 },
+      USD: { earned: 0 },
+    };
+    const nextCashback = buildCashbackSummaryFromItems(sale.items);
+    sale.cashback = nextCashback;
 
     /* =====================
        CUSTOMER BALANCE FIX
@@ -747,6 +850,7 @@ exports.adjustSaleItemQty = async (req, res) => {
       );
 
       if (customer) {
+        ensureCustomerCashback(customer);
         const extraUZS = oldDebtUZS - sale.currencyTotals.UZS.debtAmount;
         const extraUSD = oldDebtUSD - sale.currencyTotals.USD.debtAmount;
 
@@ -767,6 +871,33 @@ exports.adjustSaleItemQty = async (req, res) => {
             amount: extraUSD,
             direction: "PAYMENT",
             note: `Sale ${sale.invoiceNo} qty kamaytirildi`,
+          });
+        }
+
+        for (const currency of ["UZS", "USD"]) {
+          const diff = +(
+            Number(nextCashback[currency]?.earned || 0) -
+            Number(previousCashback[currency]?.earned || 0)
+          ).toFixed(2);
+
+          if (diff === 0) continue;
+
+          customer.cashback_balance[currency] = +Math.max(
+            0,
+            Number(customer.cashback_balance[currency] || 0) + diff,
+          ).toFixed(2);
+          customer.cashback_total_earned[currency] = +Math.max(
+            0,
+            Number(customer.cashback_total_earned[currency] || 0) + diff,
+          ).toFixed(2);
+          customer.cashback_history.push({
+            type: "ADJUST",
+            currency,
+            amount: Math.abs(diff),
+            source: "SALE",
+            saleId: sale._id,
+            note: `Sale ${sale.invoiceNo} cashback qty update`,
+            date: new Date(),
           });
         }
 
@@ -842,55 +973,58 @@ exports.deleteSale = async (req, res) => {
     /* =====================
        2️⃣ CUSTOMER BALANCE ROLLBACK
     ===================== */
-   if (sale.customerId && sale.currencyTotals) {
-     const customer = await Customer.findById(sale.customerId).session(session);
+    if (sale.customerId && sale.currencyTotals) {
+      const customer = await Customer.findById(sale.customerId).session(session);
 
-     if (customer) {
-       for (const cur of ["UZS", "USD"]) {
-         const debt = Number(sale.currencyTotals[cur]?.debtAmount || 0);
-         const paid = Number(sale.currencyTotals[cur]?.paidAmount || 0);
+      if (customer) {
+        for (const cur of ["UZS", "USD"]) {
+          const debt = Number(sale.currencyTotals[cur]?.debtAmount || 0);
+          const paid = Number(sale.currencyTotals[cur]?.paidAmount || 0);
 
-         // ❌ QARZNI BEKOR QILAMIZ (agar bo‘lsa)
-         if (debt > 0) {
-           customer.balance[cur] -= debt;
-         }
+          if (debt > 0) {
+            customer.balance[cur] -= debt;
+          }
 
-         // ✅ TO‘LANGAN PUL → PREPAID BO‘LIB QOLADI
-         if (paid > 0) {
-           customer.balance[cur] -= paid; // bu minus bo‘lib qoladi (prepaid)
-         }
+          if (paid > 0) {
+            customer.balance[cur] -= paid;
+          }
 
-         // tarixga yozamiz
-         if (debt > 0) {
-           customer.payment_history.push({
-             currency: cur,
-             amount: debt,
-             direction: "ROLLBACK",
-             note: `Sale ${sale.invoiceNo} debt rollback`,
-             date: new Date(),
-           });
-         }
+          if (debt > 0) {
+            customer.payment_history.push({
+              currency: cur,
+              amount: debt,
+              direction: "ROLLBACK",
+              note: `Sale ${sale.invoiceNo} debt rollback`,
+              date: new Date(),
+            });
+          }
 
-         if (paid > 0) {
-           customer.payment_history.push({
-             currency: cur,
-             amount: paid,
-             direction: "PREPAID",
-             note: `Sale ${sale.invoiceNo} prepaid after delete`,
-             date: new Date(),
-           });
-         }
-       }
+          if (paid > 0) {
+            customer.payment_history.push({
+              currency: cur,
+              amount: paid,
+              direction: "PREPAID",
+              note: `Sale ${sale.invoiceNo} prepaid after delete`,
+              date: new Date(),
+            });
+          }
+        }
 
-       await customer.save({ session });
-     }
-   }
+        if (sale.cashbackStatus !== "ROLLED_BACK") {
+          rollbackUsedCashback(customer, sale);
+          rollbackEarnedCashback(customer, sale);
+        }
+
+        await customer.save({ session });
+      }
+    }
 
 
     /* =====================
        3️⃣ SALE MARK AS DELETED
     ===================== */
     sale.status = "DELETED";
+    sale.cashbackStatus = "ROLLED_BACK";
     sale.deletedAt = new Date();
     sale.deleteReason = req.body?.reason || "Xato kiritilgan sale o‘chirildi";
 

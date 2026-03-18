@@ -2,6 +2,12 @@ const mongoose = require("mongoose");
 const Customer = require("../modules/Customer/Customer");
 const Sale = require("../modules/sales/Sale");
 const Order = require("../modules/orders/Order");
+const {
+  ensureCustomerCashback,
+  createMoneyBag,
+  pushCashbackHistory,
+  roundMoney,
+} = require("../utils/cashback");
 
 /* =======================
    HELPERS
@@ -14,6 +20,19 @@ function normalizePhone(phone) {
 function safeNum(n, def = 0) {
   const x = Number(n);
   return Number.isFinite(x) ? x : def;
+}
+
+function customerCashbackResponse(customer) {
+  ensureCustomerCashback(customer);
+
+  return {
+    balance: customer.cashback_balance || createMoneyBag(),
+    total_earned: customer.cashback_total_earned || createMoneyBag(),
+    total_paid: customer.cashback_total_paid || createMoneyBag(),
+    history: Array.isArray(customer.cashback_history)
+      ? customer.cashback_history
+      : [],
+  };
 }
 
 exports.createCustomer = async (req, res) => {
@@ -47,6 +66,11 @@ exports.createCustomer = async (req, res) => {
         UZS: balUZS,
         USD: balUSD,
       },
+
+      cashback_balance: { UZS: 0, USD: 0 },
+      cashback_total_earned: { UZS: 0, USD: 0 },
+      cashback_total_paid: { UZS: 0, USD: 0 },
+      cashback_history: [],
 
       payment_history: [], // ❌ bu yerga yozilmaydi
       isActive: true,
@@ -176,6 +200,8 @@ exports.getCustomers = async (req, res) => {
         USD: c.balance.USD < 0 ? Math.abs(c.balance.USD) : 0,
       },
 
+      cashback: customerCashbackResponse(c),
+
       /* === PAYMENT ONLY === */
       payment_history: Array.isArray(c.payment_history)
         ? c.payment_history.filter((h) => h.direction === "PAYMENT")
@@ -228,7 +254,13 @@ exports.getCustomerById = async (req, res) => {
     if (!customer)
       return res.status(404).json({ ok: false, message: "Customer topilmadi" });
 
-    return res.json({ ok: true, customer });
+    return res.json({
+      ok: true,
+      customer: {
+        ...customer,
+        cashback: customerCashbackResponse(customer),
+      },
+    });
   } catch (err) {
     return res.status(500).json({
       ok: false,
@@ -500,7 +532,7 @@ exports.getCustomerStatement = async (req, res) => {
     }
 
     const match = {
-      customerId: asObjectId(id),
+      customerId: new mongoose.Types.ObjectId(id),
       status: "COMPLETED",
     };
 
@@ -582,7 +614,9 @@ exports.getCustomerSummary = async (req, res) => {
        1. CUSTOMER
     ========================= */
     const customer = await Customer.findById(id)
-      .select("name phone address note createdAt balance")
+      .select(
+        "name phone address note createdAt balance cashback_balance cashback_total_earned cashback_total_paid cashback_history",
+      )
       .lean();
 
     if (!customer) {
@@ -722,6 +756,7 @@ exports.getCustomerSummary = async (req, res) => {
         customer: {
           ...customer,
           balance: customer.balance || { UZS: 0, USD: 0 },
+          cashback: customerCashbackResponse(customer),
         },
 
         orders: {
@@ -985,6 +1020,211 @@ exports.getCustomerDebtSales = async (req, res) => {
       ok: false,
       message: "Customer debt sales olishda xato",
       error: err.message,
+    });
+  }
+};
+
+exports.getCustomerCashback = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.isValidObjectId(id)) {
+      return res
+        .status(400)
+        .json({ ok: false, message: "customer id noto‘g‘ri" });
+    }
+
+    const customer = await Customer.findById(id)
+      .select(
+        "name phone cashback_balance cashback_total_earned cashback_total_paid cashback_history",
+      )
+      .lean();
+
+    if (!customer) {
+      return res.status(404).json({ ok: false, message: "Customer topilmadi" });
+    }
+
+    return res.json({
+      ok: true,
+      customer: {
+        _id: customer._id,
+        name: customer.name,
+        phone: customer.phone,
+      },
+      cashback: customerCashbackResponse(customer),
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      message: "Customer cashback olishda xato",
+      error: error.message,
+    });
+  }
+};
+
+exports.payoutCustomerCashback = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { currency = "UZS", amount, source = "PRODUCT", note = "" } =
+      req.body || {};
+
+    if (!mongoose.isValidObjectId(id)) {
+      return res
+        .status(400)
+        .json({ ok: false, message: "customer id noto‘g‘ri" });
+    }
+
+    if (!["UZS", "USD"].includes(currency)) {
+      return res
+        .status(400)
+        .json({ ok: false, message: "currency noto‘g‘ri (UZS/USD)" });
+    }
+
+    if (!["PRODUCT", "CASH", "ADMIN"].includes(source)) {
+      return res.status(400).json({
+        ok: false,
+        message: "source noto‘g‘ri (PRODUCT/CASH/ADMIN)",
+      });
+    }
+
+    const customer = await Customer.findById(id);
+    if (!customer) {
+      return res.status(404).json({ ok: false, message: "Customer topilmadi" });
+    }
+
+    ensureCustomerCashback(customer);
+
+    const currentBalance = roundMoney(customer.cashback_balance[currency] || 0);
+    const payoutAmount =
+      amount === undefined || amount === null || amount === ""
+        ? currentBalance
+        : roundMoney(amount);
+
+    if (payoutAmount <= 0) {
+      return res.status(400).json({
+        ok: false,
+        message: "amount 0 dan katta bo‘lishi kerak yoki bo‘sh qoldiring",
+      });
+    }
+
+    if (payoutAmount > currentBalance) {
+      return res.status(400).json({
+        ok: false,
+        message: "Cashback balansi yetarli emas",
+      });
+    }
+
+    customer.cashback_balance[currency] = roundMoney(
+      currentBalance - payoutAmount,
+    );
+    customer.cashback_total_paid[currency] = roundMoney(
+      customer.cashback_total_paid[currency] + payoutAmount,
+    );
+
+    pushCashbackHistory(customer, {
+      type: "PAYOUT",
+      currency,
+      amount: payoutAmount,
+      source,
+      note:
+        note ||
+        `Cashback payout (${source === "PRODUCT" ? "product" : "cash"})`,
+    });
+
+    await customer.save();
+
+    return res.json({
+      ok: true,
+      message: "Cashback chiqarildi",
+      customer: {
+        _id: customer._id,
+        name: customer.name,
+        phone: customer.phone,
+      },
+      payout: {
+        currency,
+        amount: payoutAmount,
+        source,
+      },
+      cashback: customerCashbackResponse(customer.toObject()),
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      message: "Cashback payout xato",
+      error: error.message,
+    });
+  }
+};
+
+exports.getCashbackReport = async (req, res) => {
+  try {
+    const filter = {};
+    if (req.query.onlyPositive === "true") {
+      filter.$or = [
+        { "cashback_balance.UZS": { $gt: 0 } },
+        { "cashback_balance.USD": { $gt: 0 } },
+      ];
+    }
+
+    const customers = await Customer.find(filter)
+      .select(
+        "name phone cashback_balance cashback_total_earned cashback_total_paid cashback_history",
+      )
+      .sort({
+        "cashback_balance.UZS": -1,
+        "cashback_balance.USD": -1,
+        createdAt: -1,
+      })
+      .lean();
+
+    const totals = {
+      balance: createMoneyBag(),
+      earned: createMoneyBag(),
+      paid: createMoneyBag(),
+    };
+
+    const items = customers.map((customer) => {
+      const cashback = customerCashbackResponse(customer);
+
+      totals.balance.UZS += Number(cashback.balance.UZS || 0);
+      totals.balance.USD += Number(cashback.balance.USD || 0);
+      totals.earned.UZS += Number(cashback.total_earned.UZS || 0);
+      totals.earned.USD += Number(cashback.total_earned.USD || 0);
+      totals.paid.UZS += Number(cashback.total_paid.UZS || 0);
+      totals.paid.USD += Number(cashback.total_paid.USD || 0);
+
+      return {
+        _id: customer._id,
+        name: customer.name,
+        phone: customer.phone,
+        cashback,
+      };
+    });
+
+    return res.json({
+      ok: true,
+      total: items.length,
+      totals: {
+        balance: {
+          UZS: roundMoney(totals.balance.UZS),
+          USD: roundMoney(totals.balance.USD),
+        },
+        earned: {
+          UZS: roundMoney(totals.earned.UZS),
+          USD: roundMoney(totals.earned.USD),
+        },
+        paid: {
+          UZS: roundMoney(totals.paid.UZS),
+          USD: roundMoney(totals.paid.USD),
+        },
+      },
+      items,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      message: "Cashback report olishda xato",
+      error: error.message,
     });
   }
 };

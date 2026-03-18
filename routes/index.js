@@ -362,10 +362,31 @@ router.get(
 );
 
 router.get(
+  "/customers/:id/cashback",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  customerController.getCustomerCashback,
+);
+
+router.post(
+  "/customers/:id/cashback/payout",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  customerController.payoutCustomerCashback,
+);
+
+router.get(
   "/customers/:id/timeline",
   rAuth,
   rRole("ADMIN", "CASHIER"),
   customerController.getCustomerTimeline,
+);
+
+router.get(
+  "/cashback/report",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  customerController.getCashbackReport,
 );
 /**
  * SALES (SOTUV)

@@ -56,6 +56,18 @@ const saleItemSchema = new mongoose.Schema(
       required: true,
       min: 0,
     },
+
+    cashbackPercent: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
+    cashbackAmount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
   },
   { _id: false }
 );
@@ -125,11 +137,30 @@ const saleSchema = new mongoose.Schema(
       subtotal: { type: Number, default: 0 },
       discount: { type: Number, default: 0 },
       grandTotal: { type: Number, default: 0 },
+      cashbackUsed: { type: Number, default: 0 },
+      payableTotal: { type: Number, default: 0 },
     },
 
     currencyTotals: {
       UZS: { type: currencyTotalSchema, default: () => ({}) },
       USD: { type: currencyTotalSchema, default: () => ({}) },
+    },
+
+    cashback: {
+      UZS: {
+        earned: { type: Number, default: 0 },
+        used: { type: Number, default: 0 },
+      },
+      USD: {
+        earned: { type: Number, default: 0 },
+        used: { type: Number, default: 0 },
+      },
+    },
+
+    cashbackStatus: {
+      type: String,
+      enum: ["EARNED", "ROLLED_BACK"],
+      default: "EARNED",
     },
 
     status: {

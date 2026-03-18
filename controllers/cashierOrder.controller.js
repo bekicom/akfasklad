@@ -6,6 +6,12 @@ const Product = require("../modules/products/Product");
 const Sale = require("../modules/sales/Sale");
 const Customer = require("../modules/Customer/Customer");
 const Warehouse = require("../modules/Warehouse/Warehouse");
+const {
+  calculateLineCashback,
+  buildCashbackSummaryFromItems,
+  ensureCustomerCashback,
+  applyEarnedCashback,
+} = require("../utils/cashback");
 
 /* =======================
    HELPERS
@@ -109,7 +115,7 @@ exports.confirmOrder = async (req, res) => {
       if (!warehouse) throw new Error(`Warehouse topilmadi (${cur})`);
 
       const product = await Product.findById(it.product_id)
-        .select("buy_price")
+        .select("buy_price cashback_percent")
         .session(session);
       if (!product) throw new Error("Product topilmadi");
 
@@ -122,6 +128,10 @@ exports.confirmOrder = async (req, res) => {
         sell_price: it.price_snapshot,
         buy_price: product.buy_price,
         subtotal: it.subtotal,
+        ...calculateLineCashback({
+          subtotal: it.subtotal,
+          cashbackPercent: product.cashback_percent,
+        }),
       });
 
       currencyTotals[cur].subtotal += it.subtotal;
@@ -134,6 +144,7 @@ exports.confirmOrder = async (req, res) => {
       discount: 0,
       grandTotal: currencyTotals.UZS.grandTotal + currencyTotals.USD.grandTotal,
     };
+    const cashback = buildCashbackSummaryFromItems(saleItems);
 
     /* =========================
        4️⃣ CUSTOMER BALANCE
@@ -164,6 +175,7 @@ exports.confirmOrder = async (req, res) => {
           items: saleItems,
           totals,
           currencyTotals,
+          cashback,
           status: "COMPLETED",
           note: order.note || "Agent zakas",
         },
@@ -171,6 +183,8 @@ exports.confirmOrder = async (req, res) => {
       { session }
     );
 
+    ensureCustomerCashback(customer);
+    applyEarnedCashback(customer, sale, `Order ${order._id} cashback`);
     await customer.save({ session });
 
     /* =========================

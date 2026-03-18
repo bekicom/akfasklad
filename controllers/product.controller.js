@@ -41,9 +41,9 @@ exports.createProduct = async (req, res) => {
       unit,
       warehouse_currency,
       qty,
-    
       buy_price,
       sell_price,
+      cashback_percent,
     } = req.body;
 
     if (
@@ -90,6 +90,7 @@ exports.createProduct = async (req, res) => {
       qty: qty !== undefined ? safeNumber(qty, 0) : 0,
       buy_price: safeNumber(buy_price, 0),
       sell_price: safeNumber(sell_price, 0),
+      cashback_percent: Math.max(0, safeNumber(cashback_percent, 0)),
       images,
     });
 
@@ -225,6 +226,7 @@ exports.updateProduct = async (req, res) => {
       qty,
       buy_price,
       sell_price,
+      cashback_percent,
       min_qty,
       description,
     } = req.body || {};
@@ -246,6 +248,9 @@ exports.updateProduct = async (req, res) => {
     if (qty !== undefined) product.qty = Number(qty) || 0;
     if (buy_price !== undefined) product.buy_price = Number(buy_price) || 0;
     if (sell_price !== undefined) product.sell_price = Number(sell_price) || 0;
+    if (cashback_percent !== undefined) {
+      product.cashback_percent = Math.max(0, Number(cashback_percent) || 0);
+    }
     if (min_qty !== undefined) product.min_qty = Number(min_qty) || 0;
 
     // 🔹 IMAGE (AGAR KELSA – QO‘SHADI)

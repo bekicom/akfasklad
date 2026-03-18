@@ -21,6 +21,7 @@ router.post("/login", mobileAuthController.login);
 // 📦 MOBILE → PRODUCTS
 router.post("/orders", rMobileAuth, mobileOrderController.createMobileOrder);
 router.get("/products", rMobileAuth, mobileAuthController.getMobileProducts);
+router.get("/me/cashback", rMobileAuth, mobileAuthController.getMobileMeCashback);
 
 // 📦 MOBILE → CREATE ORDER (ZAKAS)
 

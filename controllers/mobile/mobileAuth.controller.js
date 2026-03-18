@@ -3,6 +3,10 @@ const mongoose = require("mongoose");
 const jwt = require("jsonwebtoken");
 
 const Product = require("../../modules/products/Product");
+const {
+  ensureCustomerCashback,
+  createMoneyBag,
+} = require("../../utils/cashback");
 
 
 /* =========================
@@ -128,6 +132,7 @@ exports.login = async (req, res) => {
         name: customer.name,
         phone: customer.phone,
         role: customer.role,
+        cashback_balance: customer.cashback_balance || createMoneyBag(),
       },
     });
   } catch (error) {
@@ -444,7 +449,7 @@ exports.getMobileProducts = async (req, res) => {
     const [items, total] = await Promise.all([
       Product.find(filter)
         .select(
-          "_id name model sell_price qty unit category images"
+          "_id name model sell_price qty unit category images cashback_percent"
         )
         .sort({ createdAt: -1 })
         .skip(skip)
@@ -465,6 +470,44 @@ exports.getMobileProducts = async (req, res) => {
     return res.status(500).json({
       ok: false,
       message: "Mobile productlarni olishda xatolik",
+      error: error.message,
+    });
+  }
+};
+
+exports.getMobileMeCashback = async (req, res) => {
+  try {
+    const mobileCustomer = req.mobileCustomer;
+
+    if (!mobileCustomer) {
+      return res.status(401).json({
+        ok: false,
+        message: "Mobile auth yo‘q",
+      });
+    }
+
+    ensureCustomerCashback(mobileCustomer);
+
+    return res.json({
+      ok: true,
+      customer: {
+        _id: mobileCustomer._id,
+        name: mobileCustomer.name,
+        phone: mobileCustomer.phone,
+      },
+      cashback: {
+        balance: mobileCustomer.cashback_balance || createMoneyBag(),
+        total_earned: mobileCustomer.cashback_total_earned || createMoneyBag(),
+        total_paid: mobileCustomer.cashback_total_paid || createMoneyBag(),
+        history: Array.isArray(mobileCustomer.cashback_history)
+          ? mobileCustomer.cashback_history
+          : [],
+      },
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      message: "Mobile cashback olishda xatolik",
       error: error.message,
     });
   }
